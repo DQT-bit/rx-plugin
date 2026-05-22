@@ -1,0 +1,132 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ─────────────────────────────────────────────────
+# rx-go — Reasonix 规格调度脚本（预读规格头 + 调用 reasonix run）
+# 用法: rx-go <规格文件> [budget_usd] [preset]
+# ─────────────────────────────────────────────────
+
+SPEC_FILE="${1:-}"
+BUDGET_ARG="${2:-}"
+PRESET="${3:-auto}"
+
+if [ -z "$SPEC_FILE" ]; then
+    echo "用法: rx-go <规格文件> [budget_usd] [preset]" >&2
+    exit 1
+fi
+
+# 规格文件在当前目录找不到 → 向上层目录逐级找（兼容在子目录 dispatch）
+if [ ! -f "$SPEC_FILE" ]; then
+    _rel="$SPEC_FILE"
+    _dir="$PWD"
+    while [ "$_dir" != "/" ]; do
+        if [ -f "$_dir/$_rel" ]; then
+            SPEC_FILE="$_dir/$_rel"
+            break
+        fi
+        _dir="$(dirname "$_dir")"
+    done
+fi
+if [ ! -f "$SPEC_FILE" ]; then
+    echo "规格文件不存在: $1" >&2
+    exit 1
+fi
+# 规格文件转成绝对路径
+SPEC_FILE="$(cd "$(dirname "$SPEC_FILE")" && pwd)/$(basename "$SPEC_FILE")"
+
+# --- budget 决策 ---
+if [ -n "$BUDGET_ARG" ]; then
+    BUDGET="$BUDGET_ARG"
+else
+    # 从规格文件找形如 rx-budget: 0.12 的行（可能在 <!-- --> 注释内），提取数字
+    DECLARED=$(grep -oE 'rx-budget:[[:space:]]*[0-9]+\.?[0-9]*' "$SPEC_FILE" | head -1 | grep -oE '[0-9]+\.?[0-9]*' || true)
+    if [ -n "$DECLARED" ]; then
+        BUDGET="$DECLARED"
+    else
+        # 按规格行数估算
+        LINES=$(wc -l < "$SPEC_FILE")
+        if [ "$LINES" -lt 80 ]; then
+            BUDGET="0.08"
+        elif [ "$LINES" -lt 160 ]; then
+            BUDGET="0.12"
+        else
+            BUDGET="0.18"
+        fi
+    fi
+fi
+
+# --- 路径准备 ---
+# 项目根 = 规格文件所在 .reasonix-tasks/ 的父目录（不依赖 cwd，兼容子目录 dispatch）
+_spec_dir="$(dirname "$SPEC_FILE")"
+if [ "$(basename "$_spec_dir")" = ".reasonix-tasks" ]; then
+    PROJECT_ROOT="$(dirname "$_spec_dir")"
+else
+    PROJECT_ROOT="$PWD"
+fi
+LOGS_DIR="$PROJECT_ROOT/.reasonix-logs"
+mkdir -p "$LOGS_DIR"
+TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+SLUG=$(basename "$SPEC_FILE" .md)
+TRANSCRIPT="$LOGS_DIR/${TIMESTAMP}-${SLUG}.jsonl"
+STDOUT_LOG="$LOGS_DIR/${TIMESTAMP}-${SLUG}.out"
+
+# --- dispatch 信息 ---
+echo "rx-go dispatch · 规格: $SPEC_FILE · 预算: \$$BUDGET · preset: $PRESET"
+
+# --- dispatch ---
+TASK_CONTENT=$(cat "$SPEC_FILE")
+cd "$PROJECT_ROOT"
+EXIT_CODE=0
+reasonix run --budget "$BUDGET" --preset "$PRESET" --transcript "$TRANSCRIPT" "$TASK_CONTENT" > "$STDOUT_LOG" 2>&1 || EXIT_CODE=$?
+
+# --- 写 task state（.reasonix-tasks/state.json，#6）---
+if [ -d ".reasonix-tasks" ]; then
+    python3 - "$SLUG" "$BUDGET" "$PRESET" "$EXIT_CODE" "$TRANSCRIPT" <<'PYEOF'
+import json, sys, os, datetime
+slug, budget, preset, exit_code, transcript = sys.argv[1:6]
+sf = ".reasonix-tasks/state.json"
+data = {}
+if os.path.exists(sf):
+    try:
+        with open(sf, encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        data = {}
+data[slug] = {
+    "dispatched": datetime.datetime.now().strftime("%Y%m%d-%H%M%S"),
+    "budget": budget, "preset": preset,
+    "exit": int(exit_code), "transcript": transcript,
+}
+with open(sf, "w", encoding="utf-8") as f:
+    json.dump(data, f, indent=2, ensure_ascii=False)
+PYEOF
+fi
+
+# --- 全局 dispatch 日志（跨项目可观测，~/.rx/dispatch.log）---
+RX_HOME="$HOME/.rx"
+mkdir -p "$RX_HOME"
+echo "$(date '+%Y-%m-%d %H:%M:%S') | $PROJECT_ROOT | $SLUG | exit=$EXIT_CODE | budget=$BUDGET" >> "$RX_HOME/dispatch.log"
+
+# --- 自动 chmod：给本次 reasonix 改过的、带 shebang 的文件补执行权限 ---
+# （reasonix 无 chmod 能力，产出的脚本默认不可执行）
+find "$PROJECT_ROOT" -type f -newer "$SPEC_FILE" \
+    -not -path '*/.git/*' -not -path '*/node_modules/*' \
+    -not -path '*/.reasonix-logs/*' -not -path '*/.reasonix-tasks/*' \
+    -not -path '*/target/*' -not -path '*/dist/*' 2>/dev/null | while IFS= read -r f; do
+    if [ "$(head -c2 "$f" 2>/dev/null)" = '#!' ]; then
+        chmod +x "$f"
+        echo "  ✓ chmod +x $f"
+    fi
+done
+
+echo ""
+if [ "$EXIT_CODE" -eq 0 ]; then
+    tail -6 "$STDOUT_LOG"
+else
+    echo "⚠️ dispatch 失败（退出码 $EXIT_CODE），末尾输出："
+    tail -30 "$STDOUT_LOG"
+fi
+echo "── 完成 · 退出码 $EXIT_CODE"
+echo "── 完整过程: $STDOUT_LOG"
+echo "── transcript: $TRANSCRIPT"
+exit "$EXIT_CODE"

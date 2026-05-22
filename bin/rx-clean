@@ -1,0 +1,108 @@
+#!/bin/bash
+# rx-clean: 清理 reasonix 历史规格 + transcript
+# 用法:
+#   rx-clean              # 默认 7 天前文件,确认后删
+#   rx-clean --days 30    # 30 天前
+#   rx-clean --dry-run    # 只列,不删
+#   rx-clean --tasks-only # 只清项目 .reasonix-tasks/
+#   rx-clean --logs-only  # 只清项目 .reasonix-logs/
+#   rx-clean -y           # 跳过确认
+
+set -e
+
+DAYS=7
+DRY=0
+SCOPE="all"  # all / tasks / logs
+YES=0
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --days) DAYS="$2"; shift 2 ;;
+        --dry-run) DRY=1; shift ;;
+        --tasks-only) SCOPE="tasks"; shift ;;
+        --logs-only) SCOPE="logs"; shift ;;
+        -y|--yes) YES=1; shift ;;
+        -h|--help)
+            sed -n '2,11p' "$0" | sed 's/^# //'
+            exit 0 ;;
+        *) echo "未知参数: $1" >&2; exit 1 ;;
+    esac
+done
+
+LOGS_DIR=".reasonix-logs"
+TASKS_DIR=".reasonix-tasks"
+
+count_size() {
+    local dir="$1"
+    local pattern="$2"
+    if [ ! -d "$dir" ]; then return; fi
+    find "$dir" -maxdepth 1 -name "$pattern" -mtime +$DAYS 2>/dev/null | wc -l | tr -d ' '
+}
+
+human_size() {
+    local dir="$1"
+    local pattern="$2"
+    if [ ! -d "$dir" ]; then echo "0B"; return; fi
+    find "$dir" -maxdepth 1 -name "$pattern" -mtime +$DAYS -print0 2>/dev/null | xargs -0 du -ch 2>/dev/null | tail -1 | awk '{print $1}'
+}
+
+echo "═══════════════════════════════════════════"
+echo "Reasonix Clean - 删除 $DAYS 天前文件"
+echo "═══════════════════════════════════════════"
+
+# 项目 .reasonix-tasks/
+TASKS_COUNT=0
+TASKS_SIZE=""
+if [ "$SCOPE" != "logs" ] && [ -d "$TASKS_DIR" ]; then
+    TASKS_COUNT=$(count_size "$TASKS_DIR" "*.md")
+    TASKS_SIZE=$(human_size "$TASKS_DIR" "*.md")
+    echo "📁 项目 $TASKS_DIR/: $TASKS_COUNT 个 md 规格 ($TASKS_SIZE)"
+fi
+
+# 项目 .reasonix-logs/
+LOGS_JSONL_COUNT=0
+LOGS_OUT_COUNT=0
+LOGS_SIZE=""
+if [ "$SCOPE" != "tasks" ] && [ -d "$LOGS_DIR" ]; then
+    LOGS_JSONL_COUNT=$(count_size "$LOGS_DIR" "*.jsonl")
+    LOGS_OUT_COUNT=$(count_size "$LOGS_DIR" "*.out")
+    LOGS_SIZE=$(human_size "$LOGS_DIR" "*")
+    echo "📁 项目 $LOGS_DIR/: $LOGS_JSONL_COUNT jsonl + $LOGS_OUT_COUNT out ($LOGS_SIZE)"
+fi
+
+TOTAL=$((TASKS_COUNT + LOGS_JSONL_COUNT + LOGS_OUT_COUNT))
+if [ "$TOTAL" -eq 0 ]; then
+    echo "✅ 没有需要清的旧文件"
+    exit 0
+fi
+
+echo
+echo "总共 $TOTAL 个文件待删"
+
+if [ "$DRY" -eq 1 ]; then
+    echo "(--dry-run 仅列出,不删除)"
+    [ "$SCOPE" != "logs" ] && [ "$TASKS_COUNT" -gt 0 ] && \
+        find "$TASKS_DIR" -maxdepth 1 -name "*.md" -mtime +$DAYS 2>/dev/null | sed 's/^/  /'
+    [ "$SCOPE" != "tasks" ] && [ "$LOGS_JSONL_COUNT" -gt 0 ] && \
+        find "$LOGS_DIR" -maxdepth 1 \( -name "*.jsonl" -o -name "*.out" \) -mtime +$DAYS 2>/dev/null | sed 's/^/  /'
+    exit 0
+fi
+
+if [ "$YES" -eq 0 ]; then
+    printf "确认删除? [y/N] "
+    read -r ans
+    case "$ans" in
+        y|Y|yes|YES) ;;
+        *) echo "已取消"; exit 0 ;;
+    esac
+fi
+
+# 执行删除
+[ "$SCOPE" != "logs" ] && [ "$TASKS_COUNT" -gt 0 ] && \
+    find "$TASKS_DIR" -maxdepth 1 -name "*.md" -mtime +$DAYS -delete 2>/dev/null
+[ "$SCOPE" != "tasks" ] && [ "$LOGS_JSONL_COUNT" -gt 0 ] && \
+    find "$LOGS_DIR" -maxdepth 1 -name "*.jsonl" -mtime +$DAYS -delete 2>/dev/null
+[ "$SCOPE" != "tasks" ] && [ "$LOGS_OUT_COUNT" -gt 0 ] && \
+    find "$LOGS_DIR" -maxdepth 1 -name "*.out" -mtime +$DAYS -delete 2>/dev/null
+
+echo "✅ 已删除 $TOTAL 个文件"

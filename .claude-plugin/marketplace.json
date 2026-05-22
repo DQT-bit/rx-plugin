@@ -1,0 +1,13 @@
+{
+  "name": "rx",
+  "owner": {
+    "name": "songzehui"
+  },
+  "plugins": [
+    {
+      "name": "rx",
+      "source": "./",
+      "description": "Claude-as-brain / Reasonix-as-hands collaboration workflow."
+    }
+  ]
+}

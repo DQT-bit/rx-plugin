@@ -1,0 +1,17 @@
+{
+  "name": "rx",
+  "displayName": "Reasonix Bridge",
+  "version": "0.1.5",
+  "description": "Claude-as-brain / Reasonix-as-hands collaboration workflow — spec dispatch, gatekeeper enforcement, TDD loop, and audit swarm for cost-efficient code execution.",
+  "author": {
+    "name": "songzehui"
+  },
+  "license": "MIT",
+  "keywords": [
+    "reasonix",
+    "workflow",
+    "code-generation",
+    "cost-optimization",
+    "deepseek"
+  ]
+}

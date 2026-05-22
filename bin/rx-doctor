@@ -1,0 +1,116 @@
+#!/usr/bin/env bash
+# rx-doctor — Reasonix 链路健康检查
+set -uo pipefail
+
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+PLUGIN_ROOT=$(dirname "$SCRIPT_DIR")
+FAIL=0
+
+echo "═══ Reasonix 链路体检 ═══"
+echo ""
+
+# [1] reasonix CLI
+echo "[1] reasonix CLI"
+if command -v reasonix >/dev/null 2>&1; then
+    echo "  ✓ 已安装: $(reasonix --version 2>/dev/null)"
+else
+    echo "  ✗ 未安装 — 运行: npm i -g reasonix"
+    FAIL=1
+fi
+echo ""
+
+# [2] plugin 脚本
+echo "[2] plugin 脚本"
+for s in rx-go rx-clean rx-doctor; do
+    if [ -x "$PLUGIN_ROOT/bin/$s" ]; then
+        echo "  ✓ $s"
+    else
+        echo "  ✗ $s 缺失或不可执行"
+        FAIL=1
+    fi
+done
+echo ""
+
+# [3] gatekeeper 闸门
+echo "[3] gatekeeper 闸门"
+HOOKS_JSON="$PLUGIN_ROOT/hooks/hooks.json"
+GK_PY="$PLUGIN_ROOT/hooks/reasonix-gatekeeper.py"
+if [ -f "$HOOKS_JSON" ] && grep -q MultiEdit "$HOOKS_JSON" 2>/dev/null; then
+    echo "  ✓ hooks.json 已配置（matcher 含 MultiEdit）"
+else
+    echo "  ✗ hooks.json 缺失或 matcher 未含 MultiEdit"
+    FAIL=1
+fi
+if [ -f "$GK_PY" ]; then
+    echo "  ✓ gatekeeper 脚本在位"
+else
+    echo "  ✗ gatekeeper 脚本缺失"
+    FAIL=1
+fi
+echo ""
+
+# [4] task state（当前工作目录）
+echo "[4] task state（当前目录）"
+if [ -f ".reasonix-tasks/state.json" ]; then
+    python3 -c "
+import json, sys
+try:
+    with open('.reasonix-tasks/state.json', encoding='utf-8') as f:
+        data = json.load(f)
+except Exception:
+    data = {}
+for slug, info in data.items():
+    exit_code = info.get('exit', '?')
+    dispatched = info.get('dispatched', '?')
+    suffix = ' ⚠' if (isinstance(exit_code, int) and exit_code != 0) or exit_code != 0 else ''
+    print(f'  {slug}  dispatched={dispatched}  exit={exit_code}{suffix}')
+"
+else
+    echo "  （当前目录无 task state）"
+fi
+echo ""
+
+# [5] reasonix doctor（转发自带健康检查）
+echo "[5] reasonix doctor"
+if command -v reasonix >/dev/null 2>&1; then
+    reasonix doctor 2>&1 | sed 's/^/  /'
+else
+    echo "  （跳过 — reasonix 未安装）"
+fi
+echo ""
+
+# [6] 用量统计
+echo "[6] 用量（reasonix stats）"
+if command -v reasonix >/dev/null 2>&1; then
+    reasonix stats 2>/dev/null | tail -15 | sed 's/^/  /' || echo "  （暂无统计）"
+else
+    echo "  （跳过）"
+fi
+echo ""
+
+# [7] 全局活动（跨项目，~/.rx/）
+echo "[7] 全局活动（~/.rx/）"
+RX_HOME="$HOME/.rx"
+if [ -f "$RX_HOME/dispatch.log" ]; then
+    echo "  最近 5 次 dispatch:"
+    tail -5 "$RX_HOME/dispatch.log" | sed 's/^/    /'
+    FAILED=$(grep -c 'exit=[^0]' "$RX_HOME/dispatch.log" 2>/dev/null || true)
+    if [ -n "$FAILED" ] && [ "$FAILED" -gt 0 ]; then
+        echo "  ⚠ 历史失败 dispatch 共 $FAILED 次"
+    fi
+else
+    echo "  （暂无 dispatch 记录）"
+fi
+if [ -f "$RX_HOME/gatekeeper.log" ]; then
+    BLOCKS=$(wc -l < "$RX_HOME/gatekeeper.log" | tr -d ' ')
+    echo "  gatekeeper 累计拦截 $BLOCKS 次，最近 3 次："
+    tail -3 "$RX_HOME/gatekeeper.log" | sed 's/^/    /'
+fi
+echo ""
+
+if [ $FAIL -eq 0 ]; then
+    echo "✅ 链路健康"
+else
+    echo "⚠️  发现问题，见上"
+fi
+exit $FAIL

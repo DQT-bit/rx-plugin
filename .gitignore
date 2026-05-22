@@ -1,0 +1,10 @@
+# Reasonix 运行时产物
+.reasonix-tasks/
+.reasonix-logs/
+
+# 系统文件
+.DS_Store
+
+# Python 缓存
+__pycache__/
+*.pyc
