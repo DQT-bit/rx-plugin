@@ -5,6 +5,14 @@ set -uo pipefail
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 PLUGIN_ROOT=$(dirname "$SCRIPT_DIR")
 FAIL=0
+# python3 在部分 Windows 环境是 Store 占位符：command -v 能找到、但一运行就退 49。
+# 因此逐个实跑 --version，取第一个真正可用的解释器。
+PYTHON=""
+for _py in python3 python; do
+    if command -v "$_py" >/dev/null 2>&1 && "$_py" --version >/dev/null 2>&1; then
+        PYTHON="$_py"; break
+    fi
+done
 
 echo "═══ Reasonix 链路体检 ═══"
 echo ""
@@ -51,8 +59,8 @@ echo ""
 
 # [4] task state（当前工作目录）
 echo "[4] task state（当前目录）"
-if [ -f ".reasonix-tasks/state.json" ]; then
-    python3 -c "
+if [ -f ".reasonix-tasks/state.json" ] && [ -n "$PYTHON" ]; then
+    "$PYTHON" -c "
 import json, sys
 try:
     with open('.reasonix-tasks/state.json', encoding='utf-8') as f:

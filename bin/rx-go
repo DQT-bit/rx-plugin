@@ -74,23 +74,33 @@ STDOUT_LOG="$LOGS_DIR/${TIMESTAMP}-${SLUG}.out"
 echo "rx-go dispatch · 规格: $SPEC_FILE · 预算: \$$BUDGET · preset: $PRESET"
 
 # --- preset → reasonix 模型映射 ---
-# reasonix run 没有 --preset 选项，只有 --model；auto 用 config.json 默认模型（不传 --model）
-MODEL_ARGS=()
+# auto 用 config.json 默认模型（不指定 model）；flash/pro 显式指定
+MODEL=""
 case "$PRESET" in
-    flash) MODEL_ARGS=(--model deepseek-v4-flash) ;;
-    pro)   MODEL_ARGS=(--model deepseek-v4-pro) ;;
-    auto|*) MODEL_ARGS=() ;;
+    flash) MODEL="deepseek-v4-flash" ;;
+    pro)   MODEL="deepseek-v4-pro" ;;
+    auto|*) MODEL="" ;;
 esac
 
-# --- dispatch ---
-TASK_CONTENT=$(cat "$SPEC_FILE")
+# --- dispatch（经 ACP，真正执行工具落盘）---
+# 不用 `reasonix run`：run 只把工具调用作为文本输出、不执行，文件不会落盘。
+# 改走 reasonix acp（stdio JSON-RPC），由 rx-acp-dispatch.mjs 驱动 write_file 等工具真正落地。
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$PROJECT_ROOT"
 EXIT_CODE=0
-reasonix run --budget "$BUDGET" "${MODEL_ARGS[@]}" --transcript "$TRANSCRIPT" "$TASK_CONTENT" > "$STDOUT_LOG" 2>&1 || EXIT_CODE=$?
+node "$SCRIPT_DIR/rx-acp-dispatch.mjs" "$PROJECT_ROOT" "$SPEC_FILE" "$TRANSCRIPT" "$BUDGET" "$MODEL" > "$STDOUT_LOG" 2>&1 || EXIT_CODE=$?
 
 # --- 写 task state（.reasonix-tasks/state.json，#6）---
-if [ -d ".reasonix-tasks" ]; then
-    python3 - "$SLUG" "$BUDGET" "$PRESET" "$EXIT_CODE" "$TRANSCRIPT" <<'PYEOF'
+# python3 在部分 Windows 环境是 Store 占位符：command -v 能找到、但一运行就退 49。
+# 因此逐个实跑 --version，取第一个真正可用的解释器。
+PYTHON=""
+for _py in python3 python; do
+    if command -v "$_py" >/dev/null 2>&1 && "$_py" --version >/dev/null 2>&1; then
+        PYTHON="$_py"; break
+    fi
+done
+if [ -d ".reasonix-tasks" ] && [ -n "$PYTHON" ]; then
+    "$PYTHON" - "$SLUG" "$BUDGET" "$PRESET" "$EXIT_CODE" "$TRANSCRIPT" <<'PYEOF'
 import json, sys, os, datetime
 slug, budget, preset, exit_code, transcript = sys.argv[1:6]
 sf = ".reasonix-tasks/state.json"
