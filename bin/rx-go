@@ -73,11 +73,20 @@ STDOUT_LOG="$LOGS_DIR/${TIMESTAMP}-${SLUG}.out"
 # --- dispatch 信息 ---
 echo "rx-go dispatch · 规格: $SPEC_FILE · 预算: \$$BUDGET · preset: $PRESET"
 
+# --- preset → reasonix 模型映射 ---
+# reasonix run 没有 --preset 选项，只有 --model；auto 用 config.json 默认模型（不传 --model）
+MODEL_ARGS=()
+case "$PRESET" in
+    flash) MODEL_ARGS=(--model deepseek-v4-flash) ;;
+    pro)   MODEL_ARGS=(--model deepseek-v4-pro) ;;
+    auto|*) MODEL_ARGS=() ;;
+esac
+
 # --- dispatch ---
 TASK_CONTENT=$(cat "$SPEC_FILE")
 cd "$PROJECT_ROOT"
 EXIT_CODE=0
-reasonix run --budget "$BUDGET" --preset "$PRESET" --transcript "$TRANSCRIPT" "$TASK_CONTENT" > "$STDOUT_LOG" 2>&1 || EXIT_CODE=$?
+reasonix run --budget "$BUDGET" "${MODEL_ARGS[@]}" --transcript "$TRANSCRIPT" "$TASK_CONTENT" > "$STDOUT_LOG" 2>&1 || EXIT_CODE=$?
 
 # --- 写 task state（.reasonix-tasks/state.json，#6）---
 if [ -d ".reasonix-tasks" ]; then
